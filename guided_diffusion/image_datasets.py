@@ -141,7 +141,7 @@ class ImageDataset(Dataset):
         out_dict = {}
         if self.local_classes is not None:
             out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
-        return np.transpose(arr, [2, 0, 1]), out_dict
+        return np.ascontiguousarray(np.transpose(arr, [2, 0, 1]), dtype=np.float32), out_dict
 
 
 def _center_crop_or_pad(arr, image_size):
