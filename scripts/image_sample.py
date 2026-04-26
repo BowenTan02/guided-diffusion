@@ -53,13 +53,16 @@ def main():
         )
         sample = sample_fn(
             model,
-            (args.batch_size, 3, args.image_size, args.image_size),
+            (args.batch_size, args.in_channels, args.image_size, args.image_size),
             clip_denoised=args.clip_denoised,
             model_kwargs=model_kwargs,
         )
-        sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        sample = sample.permute(0, 2, 3, 1)
-        sample = sample.contiguous()
+        if args.in_channels == 1:
+            # Keep float [-1, 1] outputs for downstream analysis of intensity images.
+            sample = sample.permute(0, 2, 3, 1).contiguous()
+        else:
+            sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+            sample = sample.permute(0, 2, 3, 1).contiguous()
 
         gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
         dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL

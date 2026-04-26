@@ -72,7 +72,7 @@ def _list_image_files_recursively(data_dir):
     for entry in sorted(bf.listdir(data_dir)):
         full_path = bf.join(data_dir, entry)
         ext = entry.split(".")[-1]
-        if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif"]:
+        if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif", "npy", "tif", "tiff"]:
             results.append(full_path)
         elif bf.isdir(full_path):
             results.extend(_list_image_files_recursively(full_path))
@@ -102,25 +102,66 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         path = self.local_images[idx]
-        with bf.BlobFile(path, "rb") as f:
-            pil_image = Image.open(f)
-            pil_image.load()
-        pil_image = pil_image.convert("RGB")
-
-        if self.random_crop:
-            arr = random_crop_arr(pil_image, self.resolution)
+        ext = path.split(".")[-1].lower()
+        if ext == "npy":
+            with bf.BlobFile(path, "rb") as f:
+                arr = np.load(f)
+            # Expect a float array already normalized to [-1, 1]; HxW or HxWxC.
+            if arr.ndim == 2:
+                arr = arr[:, :, None]
+            arr = arr.astype(np.float32)
+            # Center-crop / pad to self.resolution without resampling (preserves intensity).
+            arr = _center_crop_or_pad(arr, self.resolution)
         else:
-            arr = center_crop_arr(pil_image, self.resolution)
+            with bf.BlobFile(path, "rb") as f:
+                pil_image = Image.open(f)
+                pil_image.load()
+            # Preserve grayscale if the source is grayscale; otherwise force RGB.
+            if pil_image.mode in ("I", "I;16", "F", "L"):
+                pil_image = pil_image.convert("F")
+            else:
+                pil_image = pil_image.convert("RGB")
+
+            if self.random_crop:
+                arr = random_crop_arr(pil_image, self.resolution)
+            else:
+                arr = center_crop_arr(pil_image, self.resolution)
+            arr = arr.astype(np.float32)
+            if arr.ndim == 2:
+                arr = arr[:, :, None]
+            if pil_image.mode == "F":
+                # Caller is responsible for normalizing single-channel floats to [-1, 1].
+                pass
+            else:
+                arr = arr / 127.5 - 1
 
         if self.random_flip and random.random() < 0.5:
             arr = arr[:, ::-1]
-
-        arr = arr.astype(np.float32) / 127.5 - 1
 
         out_dict = {}
         if self.local_classes is not None:
             out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
         return np.transpose(arr, [2, 0, 1]), out_dict
+
+
+def _center_crop_or_pad(arr, image_size):
+    h, w = arr.shape[:2]
+    # Pad if smaller.
+    pad_h = max(0, image_size - h)
+    pad_w = max(0, image_size - w)
+    if pad_h or pad_w:
+        arr = np.pad(
+            arr,
+            ((pad_h // 2, pad_h - pad_h // 2),
+             (pad_w // 2, pad_w - pad_w // 2),
+             (0, 0)),
+            mode="constant",
+            constant_values=-1.0,
+        )
+    h, w = arr.shape[:2]
+    cy = (h - image_size) // 2
+    cx = (w - image_size) // 2
+    return arr[cy:cy + image_size, cx:cx + image_size]
 
 
 def center_crop_arr(pil_image, image_size):
